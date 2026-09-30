@@ -1,0 +1,17 @@
+[package]
+name = "bugslayer"
+version = "0.1.0"
+edition = "2021"
+authors = ["Marcus Eliasson <marcus@bitcraze.io>"]
+description = "Host-side library for the Bugslayer deck: USB discovery, control protocol, capture stream, I2C/DeckCtrl, SWO, firmware update"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+anyhow = "1.0"
+nusb = "0.2.7"
+semver = "1.0.28"
+serde = { version = "1.0.229", features = ["derive"] }
+serialport = { version = "4.10", features = ["usbportinfo-interface"] }
+ureq = { version = "3", features = ["json"] }
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
