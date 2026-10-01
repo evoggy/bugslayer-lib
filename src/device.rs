@@ -201,7 +201,7 @@ pub fn wait_fx2(serial: &str, timeout: Duration) -> Result<DeviceInfo> {
         }
         if Instant::now() > deadline {
             bail!(Error::Connection(format!(
-                "no FX2 ({:04x}:{:04x}) with serial {}; bring it up with `bsly fx2 up`",
+                "no FX2 ({:04x}:{:04x}) with serial {}; bring it up with `bscli fx2 up`",
                 VID, PID_FX2, serial
             )));
         }
@@ -222,8 +222,8 @@ pub struct Control {
 impl Control {
     pub fn open(deck: &Deck, debug: bool) -> Result<Control> {
         let path = deck.port()?;
-        // Shared, not exclusive, so a second bsly can drive the deck while one
-        // is capturing (`bsly uart` in one terminal, `bsly deckctrl` in
+        // Shared, not exclusive, so a second bscli can drive the deck while one
+        // is capturing (`bscli uart` in one terminal, `bscli deckctrl` in
         // another). A capture only talks on the port to arm and disarm.
         let port = serialport::new(path, 115_200)
             .timeout(Duration::from_millis(20))

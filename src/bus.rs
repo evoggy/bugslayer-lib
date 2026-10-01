@@ -159,7 +159,7 @@ impl<'a> Bus<'a> {
             Ok(d) => Ok(d),
             Err(XferError::Nak) => bail!(Error::NotFound(format!("nothing acknowledged at 0x{:02x}", addr))),
             Err(XferError::Timeout) => bail!(Error::Timeout(format!(
-                "I2C transfer to 0x{:02x} (bus held low? try `bsly i2c recover`)",
+                "I2C transfer to 0x{:02x} (bus held low? try `bscli i2c recover`)",
                 addr
             ))),
         }

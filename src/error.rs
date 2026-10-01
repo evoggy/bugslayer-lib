@@ -1,6 +1,6 @@
 use std::fmt;
 
-/// Classified failures, so a front end can react by kind (bsly maps them to
+/// Classified failures, so a front end can react by kind (bscli maps them to
 /// its exit codes). The message is best-effort and can change.
 #[derive(Debug)]
 pub enum Error {

@@ -4,7 +4,7 @@
 //
 // The writer streams: samples go into the zip in 4 MB chunks as they arrive,
 // so a recording is bounded by disk, not RAM. The sck8 stream, if any, rides
-// along as one more member that sigrok ignores and `bsly decode spi` reads.
+// along as one more member that sigrok ignores and `bscli decode spi` reads.
 
 use std::fs::File;
 use std::io::{BufWriter, Read, Write};
@@ -140,7 +140,7 @@ pub struct SrFile {
     pub sck8: Option<Vec<u8>>,
 }
 
-/// A .sr with 16 channels at unitsize 2, as `bsly capture` writes it.
+/// A .sr with 16 channels at unitsize 2, as `bscli capture` writes it.
 pub fn read(path: &Path) -> Result<SrFile> {
     let mut bytes = Vec::new();
     let (rate_hz, sck8) = read_stream(path, |b| bytes.extend_from_slice(b))?;
@@ -174,7 +174,7 @@ pub fn read_stream(path: &Path, mut chunk: impl FnMut(&[u8])) -> Result<(u64, Op
         }
     }
     if unit != 2 {
-        bail!("{}: unitsize {} (bsly writes 2)", path.display(), unit);
+        bail!("{}: unitsize {} (bscli writes 2)", path.display(), unit);
     }
     let rate_hz = rate.with_context(|| format!("{}: no samplerate in metadata", path.display()))?;
     let prefix = format!("{}-", capturefile);
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn round_trip_with_hold() {
-        let dir = std::env::temp_dir().join(format!("bsly-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("bscli-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.sr");
         let mut w = SrWriter::create(&path, 250_000, &["a", "b"]).unwrap();

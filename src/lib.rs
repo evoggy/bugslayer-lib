@@ -1,4 +1,4 @@
-//! Host-side library for the Bugslayer deck, shared by `bsly` (bugslayer-cli)
+//! Host-side library for the Bugslayer deck, shared by `bscli` (bugslayer-cli)
 //! and bugslayer-ui.
 //!
 //! Nothing here prints or prompts. Where a front end has to decide something

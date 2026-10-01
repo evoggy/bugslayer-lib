@@ -1,7 +1,7 @@
 # bugslayer-lib
 
 Host-side Rust library for the Bugslayer deck (crate `bugslayer`), shared by
-[bsly](../bugslayer-cli) and [bugslayer-ui](../bugslayer-ui). It speaks the
+[bscli](../bugslayer-cli) and [bugslayer-ui](../bugslayer-ui). It speaks the
 v0 protocol of bugslayer-deck-firmware (`docs/protocol.md` there).
 
 Nothing here prints or prompts. Where a front end has to decide something
