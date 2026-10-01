@@ -10,6 +10,11 @@
 // has time: its CS windows, in order, are the sck8 stream's transactions. When
 // raw16 also resolves SCK (a few samples per SCK period) it counts each
 // window's edges too, which gives an independent decode to check sck8 against.
+//
+// Not every IO line is a chip select. On a Flow 3.0, IO_3 is the deck MCU's
+// flash chip select and follows its XIP fetches, in the middle of SPI bytes.
+// Only the lines picked by chip_selects() (or given) cut transactions, and a
+// marker is only taken as a CS change when no other line explains it.
 
 use std::collections::BTreeMap;
 
@@ -71,10 +76,44 @@ impl Raw16 for Vec<u16> {
     }
 }
 
-/// CS windows in the raw16 stream: runs where IO_1..4 differ from idle. Idle
-/// is the commonest pattern by time, not the first: a capture can start inside
-/// a transaction.
-fn raw16_windows(raw: &dyn Raw16, rate: f64) -> (Vec<Window>, u8) {
+/// The IO lines that act as chip selects, as a mask of IO_1..IO_4 (bit 0 is
+/// IO_1): the lines whose level changes between SCK edges only on byte
+/// boundaries. A line that changes in the middle of bytes is something else.
+/// A tenth of the runs may be cut, for buses with an odd transfer now and then.
+pub fn chip_selects(sck8: &[u8]) -> u8 {
+    let edges: Vec<u8> = sck8.iter().copied().filter(|x| x >> SCK_BIT & 1 == 1).collect();
+    let mut mask = 0;
+    for pin in 0..4 {
+        // Edges per run of one level. The first run may have started before
+        // the capture, and the last one is never pushed.
+        let mut runs: Vec<usize> = Vec::new();
+        let mut run = 0;
+        for w in edges.windows(2) {
+            run += 1;
+            if (w[0] ^ w[1]) >> pin & 1 == 1 {
+                runs.push(run);
+                run = 0;
+            }
+        }
+        let inner = runs.get(1..).unwrap_or(&[]);
+        let cut = inner.iter().filter(|&&n| !n.is_multiple_of(8)).count();
+        if cut * 10 <= inner.len() {
+            mask |= 1 << pin;
+        }
+    }
+    mask
+}
+
+/// Names of the lines in an IO mask, e.g. "IO_3+IO_4".
+fn mask_names(mask: u8) -> String {
+    let names: Vec<&str> = (0..4).filter(|i| mask >> i & 1 == 1).map(|i| CHANNEL_NAMES[i]).collect();
+    names.join("+")
+}
+
+/// CS windows in the raw16 stream: runs where the chip selects in `mask`
+/// differ from idle. Idle is the commonest pattern by time, not the first: a
+/// capture can start inside a transaction.
+fn raw16_windows(raw: &dyn Raw16, rate: f64, mask: u8) -> (Vec<Window>, u8) {
     let n = raw.len();
     if n == 0 {
         return (Vec::new(), 0);
@@ -82,8 +121,8 @@ fn raw16_windows(raw: &dyn Raw16, rate: f64) -> (Vec<Window>, u8) {
     // Runs of one CS pattern: (start, end, pattern).
     let mut runs = Vec::new();
     let mut start = 0u64;
-    for c in raw.changes(IO_MASK as u16, 1, n).into_iter().chain([n]) {
-        runs.push((start, c, raw.word(start) as u8 & IO_MASK));
+    for c in raw.changes(mask as u16, 1, n).into_iter().chain([n]) {
+        runs.push((start, c, raw.word(start) as u8 & mask));
         start = c;
     }
     let mut hist = [0u64; 16];
@@ -107,15 +146,17 @@ fn raw16_windows(raw: &dyn Raw16, rate: f64) -> (Vec<Window>, u8) {
     (out, idle)
 }
 
-/// Split the sck8 stream at markers and at CS pattern changes: (pattern, edge
-/// bytes) per segment. A marker follows the first edge after the CS change, so
-/// it starts a segment at the edge just before it.
-fn sck8_segments(b: &[u8]) -> Vec<(u8, Vec<u8>)> {
+/// Split the sck8 stream at markers and at changes of the chip selects in
+/// `mask`: (pattern, edge bytes) per segment. A marker follows the first edge
+/// after the CS change, so it starts a segment at the edge just before it.
+/// `unexplained` is whether to split at the markers no line explains, see
+/// marker_splits().
+fn sck8_segments(b: &[u8], mask: u8, unexplained: bool) -> Vec<(u8, Vec<u8>)> {
     let mut segs: Vec<(u8, Vec<u8>)> = Vec::new();
     for &x in b {
         if x >> SCK_BIT & 1 == 0 {
             if let Some((p, e)) = segs.last_mut() {
-                if e.len() > 1 {
+                if e.len() > 1 && marker_splits(e, mask, unexplained) {
                     let first = e.pop().unwrap();
                     let p = *p;
                     segs.push((p, vec![first]));
@@ -123,13 +164,54 @@ fn sck8_segments(b: &[u8]) -> Vec<(u8, Vec<u8>)> {
             }
             continue;
         }
-        let p = x & IO_MASK;
+        let p = x & mask;
         match segs.last_mut() {
             Some((sp, e)) if *sp == p => e.push(x),
             _ => segs.push((p, vec![x])),
         }
     }
     segs
+}
+
+/// Whether the marker after the last edge of `e` is a chip select changing.
+/// The deck marks a change of any IO line, and the change came between the
+/// last two edges. The chip selects read the same on both edges, or the
+/// pattern change would have split there already.
+fn marker_splits(e: &[u8], mask: u8, unexplained: bool) -> bool {
+    if mask == IO_MASK {
+        return true;
+    }
+    let (before, after) = (e[e.len() - 2], e[e.len() - 1]);
+    if (before ^ after) & IO_MASK & !mask != 0 {
+        // Another line changed, that is what the marker is for
+        return false;
+    }
+    // A line went and came back between two edges: a chip select between two
+    // transactions, or another line. Transactions are whole bytes, and
+    // raw16 can tell which it was, see decode_cs().
+    unexplained && (e.len() - 1).is_multiple_of(8)
+}
+
+/// Pair the transactions on a chip select (the segments not on `idle`) with
+/// the raw16 CS windows, in order: segment index -> window index.
+fn match_windows(segs: &[(u8, Vec<u8>)], windows: &[Window], idle: Option<u8>) -> Result<BTreeMap<usize, usize>, String> {
+    let active: Vec<usize> = (0..segs.len()).filter(|&i| idle.is_none_or(|id| segs[i].0 != id)).collect();
+    // Windows with SCK activity are the ones sck8 can see; raw16 may miss SCK
+    // entirely when it is too slow, so fall back to all windows.
+    let seen: Vec<usize> = (0..windows.len()).filter(|&i| !windows[i].rises.is_empty()).collect();
+    let all: Vec<usize> = (0..windows.len()).collect();
+    let matched = [&seen, &all].into_iter().find(|cand| {
+        cand.len() == active.len() && cand.iter().zip(&active).all(|(&w, &s)| windows[w].pattern == segs[s].0)
+    });
+    match matched {
+        Some(cand) => Ok(active.iter().copied().zip(cand.iter().copied()).collect()),
+        None => Err(format!(
+            "{} sck8 transactions vs {} raw16 CS windows with SCK ({} in all): not timed",
+            active.len(),
+            seen.len(),
+            windows.len()
+        )),
+    }
 }
 
 pub struct Txn {
@@ -151,36 +233,54 @@ pub struct Decoded {
 }
 
 /// Transactions from the sck8 stream, timed and cross-checked by raw16 when
-/// given.
+/// given. The chip selects are found by chip_selects().
 pub fn decode(sck8: &[u8], raw: Option<(&dyn Raw16, f64)>) -> Decoded {
+    decode_cs(sck8, raw, None)
+}
+
+/// As decode(), with the chip selects given as a mask of IO_1..IO_4 (bit 0 is
+/// IO_1) instead of found.
+pub fn decode_cs(sck8: &[u8], raw: Option<(&dyn Raw16, f64)>, cs: Option<u8>) -> Decoded {
     let mut notes = Vec::new();
-    let segs = sck8_segments(sck8);
+    let mask = match cs {
+        Some(m) => m & IO_MASK,
+        None => {
+            let m = chip_selects(sck8);
+            if m != IO_MASK {
+                notes.push(format!(
+                    "not a chip select, changes in the middle of bytes: {}",
+                    mask_names(!m & IO_MASK)
+                ));
+            }
+            m
+        }
+    };
     let (windows, idle) = match raw {
         Some((r, rate)) if rate > 0.0 => {
-            let (w, i) = raw16_windows(r, rate);
+            let (w, i) = raw16_windows(r, rate, mask);
             (w, Some(i))
         }
         _ => (Vec::new(), None),
     };
-    let active: Vec<usize> = (0..segs.len()).filter(|&i| idle.is_none_or(|id| segs[i].0 != id)).collect();
 
-    // Windows with SCK activity are the ones sck8 can see; raw16 may miss SCK
-    // entirely when it is too slow, so fall back to all windows.
+    // A marker no line explains splits on a byte boundary, unless raw16 shows
+    // that the chip selects did not change there: the transactions without
+    // those splits are then the ones that match its CS windows.
+    let mut segs = sck8_segments(sck8, mask, true);
     let mut timed: BTreeMap<usize, usize> = BTreeMap::new();
     if !windows.is_empty() {
-        let seen: Vec<usize> = (0..windows.len()).filter(|&i| !windows[i].rises.is_empty()).collect();
-        let all: Vec<usize> = (0..windows.len()).collect();
-        let matched = [&seen, &all].into_iter().find(|cand| {
-            cand.len() == active.len() && cand.iter().zip(&active).all(|(&w, &s)| windows[w].pattern == segs[s].0)
-        });
-        match matched {
-            Some(cand) => timed = active.iter().copied().zip(cand.iter().copied()).collect(),
-            None => notes.push(format!(
-                "{} sck8 transactions vs {} raw16 CS windows with SCK ({} in all): not timed",
-                active.len(),
-                seen.len(),
-                windows.len()
-            )),
+        match match_windows(&segs, &windows, idle) {
+            Ok(m) => timed = m,
+            Err(note) => {
+                let fewer = sck8_segments(sck8, mask, false);
+                match (fewer.len() < segs.len()).then(|| match_windows(&fewer, &windows, idle)) {
+                    Some(Ok(m)) => {
+                        segs = fewer;
+                        timed = m;
+                    }
+                    _ => notes.push(note),
+                }
+            }
         }
     }
 
@@ -281,6 +381,35 @@ mod tests {
         assert_eq!(d.txns[0].mosi, vec![0xA5]);
         assert_eq!(d.txns[0].miso, vec![0x3C]);
         assert_eq!(d.txns[1].mosi, vec![0x81]);
+    }
+
+    #[test]
+    fn line_changing_inside_bytes_is_not_a_chip_select() {
+        // Two bytes on IO_4 (0x7), with IO_3 also low (0x3) for five edges in
+        // the middle of the first: the deck marks both IO_3 changes.
+        let mut s = Vec::new();
+        for (i, x) in edges(0xA5, 0x3C, 0x7).into_iter().chain(edges(0x81, 0x02, 0x7)).enumerate() {
+            let x = if (2..7).contains(&i) { x & !0x4 } else { x };
+            s.push(x);
+            if i == 2 || i == 7 {
+                s.push(0x03);
+            }
+        }
+        // A second transaction after IO_4 went high and low again between edges
+        s.extend(edges(0x5A, 0xC3, 0x7));
+        s.insert(s.len() - 7, 0x07);
+        assert_eq!(chip_selects(&s) & 0x4, 0);
+        let d = decode(&s, None);
+        assert_eq!(d.txns.len(), 2);
+        assert_eq!(d.txns[0].mosi, vec![0xA5, 0x81]);
+        assert_eq!(d.txns[0].miso, vec![0x3C, 0x02]);
+        assert_eq!(d.txns[1].mosi, vec![0x5A]);
+        assert_eq!(d.notes.len(), 1);
+
+        // The same with the chip select given
+        let d = decode_cs(&s, None, Some(0x8));
+        assert_eq!(d.txns.len(), 2);
+        assert_eq!(d.txns[0].mosi, vec![0xA5, 0x81]);
     }
 
     #[test]
