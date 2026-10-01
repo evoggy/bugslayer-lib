@@ -41,8 +41,8 @@ pub fn hint(err: &anyhow::Error) -> Option<&'static str> {
         if let Some(e) = cause.downcast_ref::<nusb::Error>() {
             if e.kind() == nusb::ErrorKind::PermissionDenied {
                 return Some(
-                    "no access to the deck's USB devices; install the udev rules from \
-                     bugslayer-deck-firmware/host/99-bugslayer-deck.rules",
+                    "no access to the deck's USB devices; install the udev rules \
+                     (udev/70-bugslayer-deck.rules in bugslayer-cli; the bscli .deb installs them)",
                 );
             }
             if e.kind() == nusb::ErrorKind::Busy {
