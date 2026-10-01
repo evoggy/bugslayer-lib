@@ -262,12 +262,22 @@ pub fn gpio_rows(dir: u16, value: u16) -> Vec<(usize, &'static str, bool, bool)>
 
 /// Set GPIOs: the level first, then the direction, so a pin turned into an
 /// output comes up at the level it was given. Writes only what changes.
+///
+/// The deck controller firmware (deck-ctrl-firmware 392f6eb) only puts a level
+/// on pins that are outputs already, and reads an output back from the level
+/// it was given rather than from the pin. A pin made an output comes up at the
+/// level its output latch last had, so the level is written again after the
+/// direction. Until the firmware is fixed, a pin going from input to output
+/// can therefore show its old level for the time of one register write.
 pub fn gpio_set(bus: &mut Bus, addr: u8, old: (u16, u16), new: (u16, u16)) -> Result<()> {
     if new.1 != old.1 {
         gpio_write_value(bus, addr, new.1)?;
     }
     if new.0 != old.0 {
         gpio_write_dir(bus, addr, new.0)?;
+        if new.0 & !old.0 != 0 {
+            gpio_write_value(bus, addr, new.1)?;
+        }
     }
     Ok(())
 }
